@@ -1,123 +1,186 @@
 #!/usr/bin/env python3
-"""Draw the 26 November 2026 world-news front page (1024x1024 PNG).
+"""Render a one-page newspaper front page for 26 November 2026.
 
-Hand-written for the make.fun news-image-20261126 bounty.
-All six stories were reported on 26 November 2026.
-Layout follows the 25 November front page: navy masthead, gold accents,
-six numbered story blocks, navy footer with sources.
+Layout (1024 x 1024, portrait broadsheet feel):
+  masthead -> lead story (full width) -> 2x2 story grid -> markets band -> footer
+All six stories are drawn with shared helpers so the page stays consistent.
 """
 from PIL import Image, ImageDraw, ImageFont
 
-W, H = 1024, 1024
-BG = (247, 242, 231)
-NAVY = (16, 36, 62)
-GOLD = (232, 184, 75)
-RED = (179, 39, 30)
+FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
+SERIF = FONT_DIR + "DejaVuSerif.ttf"
+SERIF_BOLD = FONT_DIR + "DejaVuSerif-Bold.ttf"
+SANS = FONT_DIR + "DejaVuSans.ttf"
+SANS_BOLD = FONT_DIR + "DejaVuSans-Bold.ttf"
+
+PAGE = 1024
+MARGIN = 48
+CONTENT_W = PAGE - 2 * MARGIN
+
+PAPER = (253, 252, 247)
 INK = (17, 17, 17)
-GREY = (70, 70, 70)
-LIGHT = (220, 226, 235)
-WHITE = (255, 255, 255)
+SOFT = (84, 84, 84)
+ACCENT = (163, 18, 18)
+BAND = (240, 237, 228)
+RULE = (150, 150, 150)
 
-FDIR = "/usr/share/fonts/truetype/dejavu/"
-def font(name, size):
-    return ImageFont.truetype(FDIR + name, size)
 
-F_KICKER = font("DejaVuSans-Bold.ttf", 20)
-F_MAST = font("DejaVuSans-Bold.ttf", 62)
-F_DATE = font("DejaVuSans-Bold.ttf", 42)
-F_SUB = font("DejaVuSans.ttf", 21)
-F_TAG = font("DejaVuSans-Bold.ttf", 19)
-F_SUM = font("DejaVuSans.ttf", 21)
-F_NUM = font("DejaVuSans-Bold.ttf", 26)
-F_FOOT = font("DejaVuSans.ttf", 18)
+def load(path, size):
+    return ImageFont.truetype(path, size)
 
-STORIES = [
-    ("MIDDLE EAST  \u2014  OIL SHOCK", "Houthis claim strike on Saudi Arabia's biggest refinery",
-     "Brent crude tops $94 after Houthi forces claim attacks on the Ras Tanura refinery and Riyadh's financial district."),
-    ("TRADE  \u2014  US TARIFFS", "US proposes new tariffs on 14 trading partners",
-     "Highest rates aimed at China over excess industrial capacity; Taiwan faces up to 15%."),
-    ("KOREA  \u2014  NUCLEAR", "Kim orders wider deployment of tactical nuclear weapons",
-     "North Korea's leader says nuclear material production capacity is being systematically expanded (KCNA)."),
-    ("UKRAINE  \u2014  AIR BASE", "Ukraine says it struck a major Russian air base",
-     "Kyiv claims five planes damaged in the strike."),
-    ("SPACE  \u2014  TIANGONG", "First Pakistani astronaut joins China's space station",
-     "Muhammad Zeeshan Ali is the first foreign astronaut to travel to Tiangong on Shenzhou-24."),
-    ("MARKETS  \u2014  TAIWAN", "Taiwan shares plunge 1,927 points",
-     "Stocks fall to 38,195 as the NT dollar weakens past 33 per dollar on US tariff fears."),
-]
 
-ACCENTS = [(179, 39, 30), (16, 90, 120), (120, 60, 140), (30, 110, 70), (170, 110, 20), (40, 60, 160)]
-
-def wrap(draw, text, fnt, max_w):
-    words = text.split()
-    lines, cur = [], ""
-    for w in words:
-        trial = (cur + " " + w).strip()
-        if draw.textlength(trial, font=fnt) <= max_w:
-            cur = trial
+def wrap_text(canvas, text, font, max_width):
+    """Greedy word wrap; returns a list of lines that fit max_width."""
+    lines, current = [], ""
+    for word in text.split():
+        trial = f"{current} {word}".strip()
+        if canvas.textlength(trial, font=font) <= max_width:
+            current = trial
         else:
-            if cur:
-                lines.append(cur)
-            cur = w
-    if cur:
-        lines.append(cur)
+            if current:
+                lines.append(current)
+            current = word
+    if current:
+        lines.append(current)
     return lines
 
-def head_font(draw, text, max_w):
-    """Largest bold headline size (29 down to 22) that fits on one line."""
-    for size in range(29, 21, -1):
-        fnt = font("DejaVuSans-Bold.ttf", size)
-        if draw.textlength(text, font=fnt) <= max_w:
-            return fnt
-    return font("DejaVuSans-Bold.ttf", 22)
 
-def main():
-    img = Image.new("RGB", (W, H), BG)
-    d = ImageDraw.Draw(img)
+def draw_lines(canvas, x, y, lines, font, fill, leading):
+    """Draw stacked lines; returns the y just below the last line."""
+    for line in lines:
+        canvas.text((x, y), line, font=font, fill=fill)
+        y += leading
+    return y
+
+
+def headline_fit(canvas, text, start_size, max_width, max_lines, min_size=18):
+    """Shrink the serif-bold headline until it wraps into max_lines."""
+    size = start_size
+    while size > min_size:
+        font = load(SERIF_BOLD, size)
+        lines = wrap_text(canvas, text, font, max_width)
+        if len(lines) <= max_lines:
+            return font, lines
+        size -= 2
+    font = load(SERIF_BOLD, min_size)
+    return font, wrap_text(canvas, text, font, max_width)
+
+
+def kicker_line(canvas, x, y, label):
+    font = load(SANS_BOLD, 18)
+    canvas.text((x, y), label, font=font, fill=ACCENT)
+    return y + 26
+
+
+def story_block(canvas, x, y, width, kicker, headline, summary,
+                head_size=27, max_head_lines=3, summary_size=19):
+    """One grid story: kicker, headline, summary. Returns bottom y."""
+    y = kicker_line(canvas, x, y, kicker)
+    font, lines = headline_fit(canvas, headline, head_size, width, max_head_lines)
+    y = draw_lines(canvas, x, y, lines, font, INK, int(head_size * 1.18))
+    y += 6
+    sfont = load(SANS, summary_size)
+    slines = wrap_text(canvas, summary, sfont, width)
+    return draw_lines(canvas, x, y, slines, sfont, SOFT, int(summary_size * 1.35))
+
+
+def build_page():
+    sheet = Image.new("RGB", (PAGE, PAGE), PAPER)
+    d = ImageDraw.Draw(sheet)
 
     # ---- Masthead ----
-    d.rectangle([0, 0, W, 196], fill=NAVY)
-    d.text((32, 18), "T H E   W O R L D   I N   O N E   P A G E", font=F_KICKER, fill=GOLD)
-    d.text((30, 48), "WORLD NEWS", font=F_MAST, fill=WHITE)
-    d.text((32, 122), "THURSDAY, 26 NOVEMBER 2026", font=F_DATE, fill=GOLD)
-    d.text((32, 168), "Six stories that defined the day \u2014 as reported on 26 November 2026",
-           font=F_SUB, fill=LIGHT)
-    d.rectangle([0, 196, W, 204], fill=RED)
+    eyebrow = load(SANS_BOLD, 20)
+    d.text((PAGE // 2, 34), "WORLD NEWS", font=eyebrow, fill=ACCENT, anchor="ma")
+    title = load(SERIF_BOLD, 58)
+    d.text((PAGE // 2, 62), "THE WORLD IN ONE PAGE", font=title, fill=INK, anchor="ma")
+    dateline = load(SANS, 21)
+    d.text((PAGE // 2, 138), "THURSDAY, 26 NOVEMBER 2026", font=dateline,
+           fill=SOFT, anchor="ma")
+    d.line([(MARGIN, 172), (PAGE - MARGIN, 172)], fill=INK, width=4)
+    d.line([(MARGIN, 180), (PAGE - MARGIN, 180)], fill=INK, width=1)
 
-    # ---- Stories ----
-    top, block_h = 204, 127
-    x_num, x_txt = 28, 104
-    txt_w = W - x_txt - 30
-    for i, (tag, head, summ) in enumerate(STORIES):
-        y = top + i * block_h
-        accent = ACCENTS[i]
-        d.rectangle([x_num, y + 14, x_num + 54, y + 68], fill=accent)
-        num = str(i + 1)
-        nw = d.textlength(num, font=F_NUM)
-        d.text((x_num + (54 - nw) / 2, y + 24), num, font=F_NUM, fill=WHITE)
-        d.text((x_txt, y + 12), tag, font=F_TAG, fill=RED)
-        d.text((x_txt, y + 38), head, font=head_font(d, head, txt_w), fill=INK)
-        lines = wrap(d, summ, F_SUM, txt_w)
-        assert len(lines) <= 2, f"story {i + 1} summary wraps to {len(lines)} lines: {lines}"
-        ly = y + 74
-        for ln in lines[:2]:
-            d.text((x_txt, ly), ln, font=F_SUM, fill=GREY)
-            ly += 26
-        if i < len(STORIES) - 1:
-            d.line([(x_txt, y + block_h - 8), (W - 30, y + block_h - 8)],
-                   fill=(200, 192, 175), width=1)
+    # ---- Lead story: Middle East, full width ----
+    y = 200
+    y = kicker_line(d, MARGIN, y, "MIDDLE EAST  —  OIL SHOCK")
+    font, lines = headline_fit(
+        d, "Houthis claim strike on Saudi Arabia's biggest refinery",
+        40, CONTENT_W, 2)
+    y = draw_lines(d, MARGIN, y, lines, font, INK, 48)
+    y += 8
+    sfont = load(SANS, 22)
+    slines = wrap_text(
+        d,
+        "Brent crude tops $94 after Houthi forces claim attacks on the "
+        "Ras Tanura refinery and Riyadh's financial district.",
+        sfont, CONTENT_W)
+    y = draw_lines(d, MARGIN, y, slines, sfont, SOFT, 30)
+    y += 14
+    d.line([(MARGIN, y), (PAGE - MARGIN, y)], fill=RULE, width=1)
+    y += 18
+
+    # ---- 2 x 2 grid ----
+    col_w = (CONTENT_W - 32) // 2
+    left_x = MARGIN
+    right_x = MARGIN + col_w + 32
+    grid_top = y
+
+    end_l1 = story_block(
+        d, left_x, grid_top, col_w,
+        "TRADE  —  US TARIFFS",
+        "US proposes new tariffs on 14 trading partners",
+        "Highest rates aimed at China over excess industrial capacity; "
+        "Taiwan faces up to 15%.")
+    end_r1 = story_block(
+        d, right_x, grid_top, col_w,
+        "KOREA  —  NUCLEAR",
+        "Kim orders wider deployment of tactical nuclear weapons",
+        "North Korea's leader says nuclear material production capacity is "
+        "being systematically expanded (KCNA).")
+    row2_y = max(end_l1, end_r1) + 20
+    d.line([(MARGIN, row2_y - 10), (PAGE - MARGIN, row2_y - 10)], fill=RULE, width=1)
+
+    end_l2 = story_block(
+        d, left_x, row2_y, col_w,
+        "UKRAINE  —  AIR BASE",
+        "Ukraine says it struck a major Russian air base",
+        "Kyiv claims five planes damaged in the strike.")
+    end_r2 = story_block(
+        d, right_x, row2_y, col_w,
+        "SPACE  —  TIANGONG",
+        "First Pakistani astronaut joins China's space station",
+        "Muhammad Zeeshan Ali is the first foreign astronaut to travel to "
+        "Tiangong on Shenzhou-24.")
+    grid_bottom = max(end_l2, end_r2)
+    mid_x = MARGIN + col_w + 16
+    d.line([(mid_x, grid_top), (mid_x, grid_bottom)], fill=RULE, width=1)
+
+    # ---- Markets band ----
+    band_top = grid_bottom + 16
+    band_h = 104
+    d.rectangle([(MARGIN, band_top), (PAGE - MARGIN, band_top + band_h)], fill=BAND)
+    d.line([(MARGIN, band_top), (PAGE - MARGIN, band_top)], fill=ACCENT, width=3)
+    bx, by = MARGIN + 20, band_top + 14
+    by = kicker_line(d, bx, by, "MARKETS  —  TAIWAN")
+    mfont, mlines = headline_fit(
+        d, "Taiwan shares plunge 1,927 points", 26, CONTENT_W - 40, 1)
+    by = draw_lines(d, bx, by, mlines, mfont, INK, 30)
+    msum = load(SANS, 18)
+    d.text((bx, by + 2),
+           "Stocks fall to 38,195 as the NT dollar weakens past 33 per dollar "
+           "on US tariff fears.",
+           font=msum, fill=SOFT)
 
     # ---- Footer ----
-    fy = top + len(STORIES) * block_h  # 966
-    d.rectangle([0, fy, W, H], fill=NAVY)
-    foot = "Sources: Reuters  \u00b7  BBC  \u00b7  CNN  \u00b7  KCNA  \u00b7  SimpleLife.news"
-    d.text((32, fy + 12), foot, font=F_FOOT, fill=LIGHT)
-    d.text((32, fy + 34), "An AI-made front page for make.fun \u2014 one day, one image.",
-           font=F_FOOT, fill=GOLD)
+    foot_y = band_top + band_h + 22
+    d.line([(MARGIN, foot_y), (PAGE - MARGIN, foot_y)], fill=INK, width=2)
+    sfont = load(SANS, 16)
+    d.text((PAGE // 2, foot_y + 10),
+           "Sources: Reuters · BBC · CNN · KCNA · SimpleLife.news",
+           font=sfont, fill=SOFT, anchor="ma")
 
-    img.save("/home/hatch/workspace/makefun/news-image-work/news-image-20261126/entry.png",
-             optimize=True)
-    print("saved")
+    sheet.save("entry.png", optimize=True)
+    print("wrote entry.png")
+
 
 if __name__ == "__main__":
-    main()
+    build_page()
